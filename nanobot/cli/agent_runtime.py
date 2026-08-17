@@ -1,16 +1,12 @@
 """Python runtime for one-shot agent calls and the compatibility prompt."""
 
-from __future__ import annotations
-
 import asyncio
 import signal
 import sys
-from collections.abc import Awaitable, Callable
 from types import FrameType
 from typing import Any
 
 import typer
-from rich.console import Console
 
 from nanobot import __logo__
 from nanobot.agent.hooks import create_file_edit_activity_hook
@@ -44,8 +40,6 @@ from nanobot.utils.restart import (
     format_restart_completed_message,
     should_show_cli_restart_notice,
 )
-
-console = Console()
 
 
 def run_local_agent(
@@ -115,50 +109,44 @@ class _LocalAgent:
             bot_icon=self.config.agents.defaults.bot_icon,
         )
 
-    def progress(
-        self,
-        renderer: StreamRenderer | None = None,
-    ) -> Callable[..., Awaitable[None]]:
-        reasoning_buffer = cli_terminal._ReasoningBuffer()
-
-        async def report(
-            content: str,
-            *,
-            tool_hint: bool = False,
-            reasoning: bool = False,
-            **kwargs: Any,
-        ) -> None:
-            channel_config = self.loop.channels_config
-            if kwargs.get("reasoning_end"):
-                if channel_config and not channel_config.show_reasoning:
-                    reasoning_buffer.clear()
-                else:
-                    cli_terminal._flush_cli_reasoning(reasoning_buffer, None, renderer)
-                return
-            if reasoning:
-                if channel_config and not channel_config.show_reasoning:
-                    reasoning_buffer.clear()
-                    return
-                text = reasoning_buffer.add(content)
-                if text:
-                    cli_terminal._print_cli_reasoning(text, None, renderer)
-                return
-            if channel_config and tool_hint and not channel_config.send_tool_hints:
-                return
-            if channel_config and not tool_hint and not channel_config.send_progress:
-                return
-            cli_terminal._print_cli_progress_line(content, None, renderer)
-
-        return report
-
     async def run_once(self, message: str, *, session_id: str, markdown: bool) -> None:
         try:
             await self.mcp.connect()
             renderer = self.renderer(markdown)
+            reasoning_buffer = cli_terminal._ReasoningBuffer()
+
+            async def report(
+                content: str,
+                *,
+                tool_hint: bool = False,
+                reasoning: bool = False,
+                **kwargs: Any,
+            ) -> None:
+                channel_config = self.loop.channels_config
+                if kwargs.get("reasoning_end"):
+                    if channel_config and not channel_config.show_reasoning:
+                        reasoning_buffer.clear()
+                    else:
+                        cli_terminal._flush_cli_reasoning(reasoning_buffer, None, renderer)
+                    return
+                if reasoning:
+                    if channel_config and not channel_config.show_reasoning:
+                        reasoning_buffer.clear()
+                        return
+                    text = reasoning_buffer.add(content)
+                    if text:
+                        cli_terminal._print_cli_reasoning(text, None, renderer)
+                    return
+                if channel_config and tool_hint and not channel_config.send_tool_hints:
+                    return
+                if channel_config and not tool_hint and not channel_config.send_progress:
+                    return
+                cli_terminal._print_cli_progress_line(content, None, renderer)
+
             response = await self.loop.process_direct(
                 message,
                 session_id,
-                on_progress=self.progress(renderer),
+                on_progress=report,
                 on_stream=renderer.on_delta,
                 on_stream_end=renderer.on_end,
             )
@@ -178,7 +166,7 @@ class _LocalAgent:
         cli_terminal._init_prompt_session()
         model, preset_tag = _model_display(self.config)
         icon = self.config.agents.defaults.bot_icon or __logo__
-        console.print(
+        cli_terminal.console.print(
             f"{icon} Interactive mode [bold blue]({model})[/bold blue]{preset_tag} "
             "— type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit\n"
         )
@@ -192,7 +180,7 @@ class _LocalAgent:
     def _install_signal_handlers() -> None:
         def exit_on_signal(signum: int, _frame: FrameType | None) -> None:
             cli_terminal._restore_terminal()
-            console.print(f"\nReceived {signal.Signals(signum).name}, goodbye!")
+            cli_terminal.console.print(f"\nReceived {signal.Signals(signum).name}, goodbye!")
             sys.exit(0)
 
         signal.signal(signal.SIGINT, exit_on_signal)
@@ -273,7 +261,7 @@ class _LocalAgent:
                         continue
                     if cli_terminal._is_exit_command(command):
                         cli_terminal._restore_terminal()
-                        console.print("\nGoodbye!")
+                        cli_terminal.console.print("\nGoodbye!")
                         break
 
                     turn_done.clear()
@@ -311,7 +299,7 @@ class _LocalAgent:
                         await renderer.close()
                 except (KeyboardInterrupt, EOFError):
                     cli_terminal._restore_terminal()
-                    console.print("\nGoodbye!")
+                    cli_terminal.console.print("\nGoodbye!")
                     break
         finally:
             self.loop.stop()
