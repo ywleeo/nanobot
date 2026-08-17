@@ -474,13 +474,20 @@ def _print_webui_foreground_lifecycle(*, attached: bool) -> None:
 def _attach_to_background_gateway(
     runtime: "GatewayRuntime",
     *,
+    health_check: Callable[[], bool] | None = None,
     poll_hook: Callable[[], None] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Keep a WebUI launcher attached without taking ownership of the gateway."""
+    """Keep a WebUI launcher attached without taking ownership of the gateway.
+
+    The state file is a lifecycle cache, not the gateway's source of truth.  A
+    live health endpoint must keep this client attached while that cache is
+    being recovered; otherwise this process releases its lease and can make an
+    on-demand gateway stop while another UI is still connecting.
+    """
     _print_webui_foreground_lifecycle(attached=True)
     try:
-        while runtime.status().running:
+        while runtime.status().running or (health_check is not None and health_check()):
             if poll_hook is not None:
                 poll_hook()
             sleep(0.5)

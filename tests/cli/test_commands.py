@@ -2002,7 +2002,10 @@ def _patch_webui_managed_gateway(
     )
     monkeypatch.setattr(
         "nanobot.cli.webui._attach_to_background_gateway",
-        lambda runtime, **_kwargs: captured.__setitem__("attached_runtime", runtime),
+        lambda runtime, **kwargs: captured.update(
+            attached_runtime=runtime,
+            attach_kwargs=kwargs,
+        ),
     )
     return captured
 
@@ -2311,7 +2314,8 @@ def test_webui_dev_starts_vite_sidecar_and_gateway(monkeypatch, tmp_path: Path) 
     assert browser_url.startswith("http://127.0.0.1:5173/#/?bootstrapSecret=")
     assert seen["start_options"].port == 18888
     assert seen["attached_while_dev_running"] is True
-    assert seen["attach_kwargs"] == {"poll_hook": seen["dev_server"].ensure_running}
+    assert seen["attach_kwargs"]["poll_hook"] == seen["dev_server"].ensure_running
+    assert callable(seen["attach_kwargs"]["health_check"])
     assert seen["opened_url"] == browser_url
     assert seen["dev_running"] is False
     assert "WebUI dev: http://127.0.0.1:5173/#/?bootstrapSecret=<redacted>" in re.sub(
@@ -2558,7 +2562,7 @@ def test_webui_foreground_attaches_to_existing_managed_gateway(monkeypatch, tmp_
     monkeypatch.setattr("nanobot.gateway.GatewayRuntime", _FakeRuntime)
     monkeypatch.setattr(
         "nanobot.cli.webui._attach_to_background_gateway",
-        lambda runtime: seen.__setitem__("attached_runtime", runtime),
+        lambda runtime, **_kwargs: seen.__setitem__("attached_runtime", runtime),
     )
 
     result = runner.invoke(app, ["webui", "--config", str(config_file), "--yes"])
@@ -2573,6 +2577,44 @@ def test_webui_foreground_attaches_to_existing_managed_gateway(monkeypatch, tmp_
     fragment = parsed.fragment.removeprefix("/?")
     assert parse_qs(fragment).get("bootstrapSecret")
     assert seen["open_kwargs"] == {"wait": False}
+
+
+def test_webui_attaches_when_managed_health_outlives_state_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A live managed gateway remains attachable while its state file is missing."""
+    config_file = tmp_path / "config.json"
+    config_file.write_text("{}")
+    from nanobot.gateway.runtime import GatewayInstance, gateway_instance_id
+
+    expected_instance_id = gateway_instance_id(
+        GatewayInstance.resolve(config_path=config_file).paths,
+        Config().gateway.port,
+    )
+    seen: dict[str, object] = {}
+    _patch_webui_provider_ready(monkeypatch)
+    monkeypatch.setattr("nanobot.cli.webui.sync_workspace_templates", lambda _path: None)
+    monkeypatch.setattr("nanobot.cli.webui._gateway_health_ready", lambda *_args: True)
+    monkeypatch.setattr("nanobot.cli.webui._webui_endpoint_reachable", lambda *_args: True)
+    monkeypatch.setattr(
+        "nanobot.cli.webui._gateway_health_info",
+        lambda *_args, **_kwargs: {
+            "service": "nanobot-gateway",
+            "pid": 123,
+            "launch_mode": "background",
+            "auto_stop": True,
+            "instance_id": expected_instance_id,
+        },
+    )
+    monkeypatch.setattr("nanobot.cli.webui._open_webui_browser", lambda *_args, **_kwargs: None)
+    _patch_webui_managed_gateway(monkeypatch, seen)
+
+    result = runner.invoke(app, ["webui", "--config", str(config_file), "--yes"])
+
+    assert result.exit_code == 0
+    assert callable(seen["attach_kwargs"]["health_check"])
+    assert "older gateway" not in result.stdout
 
 
 def test_attach_to_background_gateway_detaches_on_ctrl_c(capsys) -> None:
@@ -2600,6 +2642,27 @@ def test_attach_to_background_gateway_detaches_on_ctrl_c(capsys) -> None:
     assert "WebUI launcher detached" in rendered
 
 
+def test_attach_to_background_gateway_trusts_health_during_state_recovery(capsys) -> None:
+    """A live gateway must keep its client lease while state is being recovered."""
+
+    class _FakeRuntime:
+        def status(self):
+            return SimpleNamespace(running=False)
+
+    def _interrupt(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    cli_webui_support._attach_to_background_gateway(
+        _FakeRuntime(),
+        health_check=lambda: True,
+        sleep=_interrupt,
+    )
+
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert "WebUI launcher detached" in rendered
+    assert "Gateway stopped" not in rendered
+
+
 def test_attach_to_background_gateway_checks_owned_sidecar() -> None:
     class _FakeRuntime:
         def status(self):
@@ -2625,7 +2688,7 @@ def test_webui_foreground_does_not_claim_unmanaged_gateway(monkeypatch, tmp_path
     monkeypatch.setattr("nanobot.cli.webui._open_webui_browser", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         "nanobot.cli.webui._attach_to_background_gateway",
-        lambda _runtime: pytest.fail("unmanaged gateway must not be attached"),
+        lambda _runtime, **_kwargs: pytest.fail("unmanaged gateway must not be attached"),
     )
 
     class _FakeRuntime:
@@ -3578,6 +3641,8 @@ def test_gateway_health_endpoint_binds_and_serves_expected_responses(
     assert isinstance(health_body["pid"], int)
     assert health_body["launch_mode"] == "unknown"
     assert health_body["auto_stop"] is False
+    assert isinstance(health_body["instance_id"], str)
+    assert len(health_body["instance_id"]) == 16
 
     missing_response, missing_writer = _call_handler("/missing")
     assert missing_writer.closed is True

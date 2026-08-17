@@ -74,6 +74,18 @@ class GatewayAlreadyRunningError(RuntimeError):
         self.status = status
 
 
+def gateway_instance_id(paths: ProcessRuntimePaths, port: int) -> str:
+    """Return an opaque identity for one local gateway selector set.
+
+    The health endpoint is intentionally unauthenticated on local installs, so
+    it must not expose config/workspace paths.  Hashing the stable state path
+    together with the health port lets clients reject a different instance
+    without leaking those selectors.
+    """
+    selector = f"{paths.state_path.resolve(strict=False)}\0{port}"
+    return hashlib.sha256(selector.encode("utf-8")).hexdigest()[:16]
+
+
 def build_gateway_command(python_executable: str, options: GatewayStartOptions) -> list[str]:
     """Build a foreground gateway command for process supervisors."""
     command = [

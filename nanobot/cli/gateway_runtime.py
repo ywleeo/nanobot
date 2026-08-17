@@ -395,6 +395,7 @@ def _run_gateway(
     from nanobot.gateway.runtime import (
         GatewayClientLease,
         GatewayRuntime,
+        gateway_instance_id,
         monitor_gateway_clients,
     )
 
@@ -762,6 +763,10 @@ def _run_gateway(
                                 "pid": os.getpid(),
                                 "launch_mode": current.launch_mode,
                                 "auto_stop": lease_snapshot.auto_stop,
+                                "instance_id": gateway_instance_id(
+                                    gateway_runtime.paths,
+                                    port,
+                                ),
                             }
                         )
                         status = "200 OK"

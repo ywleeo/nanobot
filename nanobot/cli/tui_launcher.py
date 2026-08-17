@@ -367,7 +367,7 @@ def _ensure_gateway(
     workspace_override: str | None,
 ) -> _GatewayHandle:
     from nanobot.gateway import GatewayClientLease, GatewayInstance, GatewayRuntime
-    from nanobot.gateway.runtime import GatewayLaunchMode
+    from nanobot.gateway.runtime import GatewayLaunchMode, gateway_instance_id
 
     base_url = _webui_browser_url(config).split("/#/", 1)[0].rstrip("/")
     instance = GatewayInstance.resolve(
@@ -380,16 +380,21 @@ def _ensure_gateway(
     try:
         status = runtime.status()
         endpoint_reachable = _webui_endpoint_reachable(base_url)
+        expected_instance_id = gateway_instance_id(runtime.paths, config.gateway.port)
         health_info = (
             _gateway_health_info(config.gateway.host, config.gateway.port)
             if endpoint_reachable
             else None
         )
-        if (
-            not status.running
-            and health_info is not None
+        health_instance_id = (
+            health_info.get("instance_id") if isinstance(health_info, dict) else None
+        )
+        managed_health_matches = (
+            health_info is not None
             and health_info.get("service") == "nanobot-gateway"
-        ):
+            and health_instance_id == expected_instance_id
+        )
+        if not status.running and managed_health_matches and health_info is not None:
             launch_mode = health_info.get("launch_mode")
             if launch_mode not in {"foreground", "background", "unknown"}:
                 launch_mode = "unknown"
@@ -409,15 +414,17 @@ def _ensure_gateway(
                 )
             if endpoint_reachable:
                 return _GatewayHandle(base_url=base_url, lease=lease)
-        elif endpoint_reachable and health_info is not None:
-            # Gateways from before the health identity response only expose
-            # {"status": "ok"}. They are still the live local gateway; do not
-            # report a false negative or try to start a second process.
-            return _GatewayHandle(base_url=base_url, lease=lease)
         elif endpoint_reachable:
+            if health_info is not None and health_info.get("service") == "nanobot-gateway":
+                if isinstance(health_instance_id, str) and health_instance_id != expected_instance_id:
+                    detail = "belongs to a different nanobot instance"
+                else:
+                    detail = "does not expose a matching instance identity"
+            else:
+                detail = "is occupied, but its health identity cannot be verified"
             raise TuiUnavailableError(
-                "the configured gateway port is occupied, but its health identity "
-                "cannot be verified; stop that process or use `nanobot agent --classic`"
+                f"the configured gateway port {detail}; stop that instance or use "
+                "`nanobot agent --classic`"
             )
 
         result = lease.ensure_on_demand_gateway(

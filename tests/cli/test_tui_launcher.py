@@ -569,6 +569,39 @@ def test_gateway_reuse_requires_the_matching_managed_instance(
         )
 
 
+def test_gateway_reuse_rejects_a_different_managed_instance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = Config()
+
+    class FakeRuntime:
+        def __init__(self, *, paths: object) -> None:
+            self.paths = paths
+
+        def status(self) -> SimpleNamespace:
+            return SimpleNamespace(running=False, port=None)
+
+    monkeypatch.setattr("nanobot.gateway.GatewayRuntime", FakeRuntime)
+    monkeypatch.setattr("nanobot.cli.tui_launcher._webui_endpoint_reachable", lambda _url: True)
+    monkeypatch.setattr(
+        "nanobot.cli.tui_launcher._gateway_health_info",
+        lambda *_a, **_kw: {
+            "status": "ok",
+            "service": "nanobot-gateway",
+            "pid": 123,
+            "instance_id": "different-instance",
+        },
+    )
+
+    with pytest.raises(TuiUnavailableError, match="different nanobot instance"):
+        _ensure_gateway(
+            config,
+            config_path=tmp_path / "config.json",
+            workspace_override=None,
+        )
+
+
 def test_gateway_reuses_the_matching_managed_instance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

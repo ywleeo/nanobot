@@ -137,14 +137,20 @@ def create_gateway_app(
         try:
             cfg = load_runtime_config(config, workspace)
             from nanobot.cli.webui_support import _gateway_health_info
+            from nanobot.gateway.runtime import gateway_instance_id
 
             health = _gateway_health_info(cfg.gateway.host, port or cfg.gateway.port)
             if health is None:
                 return status
+            expected_instance_id = gateway_instance_id(
+                runtime.paths,
+                port or cfg.gateway.port,
+            )
             if health.get("service") != "nanobot-gateway":
                 # Pre-identity gateways only returned {"status": "ok"}. The
                 # health endpoint is still authoritative for liveness, but
-                # there is no safe PID to manage until the next restart.
+                # there is no safe PID to manage until the next restart.  A
+                # mismatched identity is handled separately below.
                 return GatewayStatus(
                     running=True,
                     pid=None,
@@ -152,6 +158,20 @@ def create_gateway_app(
                     log_path=status.log_path,
                     port=port or cfg.gateway.port,
                     reason="health_endpoint_only",
+                    launch_mode="unknown",
+                    lifetime="explicit",
+                    clients=status.clients,
+                )
+            if health.get("instance_id") != expected_instance_id:
+                # A different managed instance is live on this port; never
+                # adopt its PID or report it as this selector set.
+                return GatewayStatus(
+                    running=False,
+                    pid=None,
+                    state_path=status.state_path,
+                    log_path=status.log_path,
+                    port=port or cfg.gateway.port,
+                    reason="different_instance",
                     launch_mode="unknown",
                     lifetime="explicit",
                     clients=status.clients,

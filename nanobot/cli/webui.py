@@ -108,7 +108,7 @@ def webui(
         GatewayRuntime,
         RuntimeResult,
     )
-    from nanobot.gateway.runtime import GatewayLaunchMode
+    from nanobot.gateway.runtime import GatewayLaunchMode, gateway_instance_id
 
     cli_terminal._ensure_interactive_tty_mode()
     config_path = _resolve_webui_config_path(config)
@@ -278,9 +278,31 @@ def webui(
         else None
     )
     webui_ready = _webui_endpoint_reachable(webui_url)
+
+    def gateway_alive() -> bool:
+        return _gateway_health_ready(
+            runtime_config.gateway.host,
+            effective_gateway_port,
+        )
+
+    expected_instance_id = gateway_instance_id(runtime.paths, effective_gateway_port)
+    health_instance_id = (
+        health_info.get("instance_id") if isinstance(health_info, dict) else None
+    )
+    managed_health = (
+        health_info is not None
+        and health_info.get("service") == "nanobot-gateway"
+        and health_instance_id == expected_instance_id
+    )
+    different_managed_health = (
+        health_info is not None
+        and health_info.get("service") == "nanobot-gateway"
+        and isinstance(health_instance_id, str)
+        and health_instance_id != expected_instance_id
+    )
     recover = cast(Callable[..., RuntimeResult] | None, getattr(runtime, "recover_process", None))
     if gateway_ready and callable(recover) and not runtime.status().running:
-        if health_info is not None and health_info.get("service") == "nanobot-gateway":
+        if managed_health and health_info is not None:
             launch_mode = health_info.get("launch_mode")
             if launch_mode not in {"foreground", "background", "unknown"}:
                 launch_mode = "unknown"
@@ -318,12 +340,18 @@ def webui(
                 )
                 if not no_open:
                     _open_webui_browser(webui_url, wait=False)
-                if runtime.status().running:
-                    _attach_to_background_gateway(runtime)
+                if runtime.status().running or managed_health:
+                    _attach_to_background_gateway(runtime, health_check=gateway_alive)
+                elif different_managed_health:
+                    console.print(
+                        "[red]The configured gateway port belongs to a different nanobot "
+                        "instance; stop it or use a different --gateway-port.[/red]"
+                    )
+                    raise typer.Exit(1)
                 else:
                     console.print(
-                        "[yellow]This gateway is live, but its lifecycle state is unavailable. "
-                        "It will be adopted automatically after its next restart.[/yellow]"
+                        "[yellow]This older gateway is live, but its lifecycle state is unavailable. "
+                        "Stop it from its owning terminal before attaching WebUI.[/yellow]"
                     )
                 return
 
@@ -339,6 +367,7 @@ def webui(
                     if runtime.status().running:
                         _attach_to_background_gateway(
                             runtime,
+                            health_check=gateway_alive,
                             poll_hook=dev_server.ensure_running,
                         )
                     else:
@@ -387,6 +416,7 @@ def webui(
                         _open_webui_browser(dev_browser_url)
                     _attach_to_background_gateway(
                         runtime,
+                        health_check=gateway_alive,
                         poll_hook=dev_server.ensure_running,
                     )
             except WebUIDevError as exc:
@@ -396,7 +426,7 @@ def webui(
 
         if not no_open:
             _open_webui_browser(webui_url)
-        _attach_to_background_gateway(runtime)
+        _attach_to_background_gateway(runtime, health_check=gateway_alive)
     finally:
         if lease.release():
             console.print("[dim]Last local client exited; the on-demand gateway was stopped.[/dim]")
