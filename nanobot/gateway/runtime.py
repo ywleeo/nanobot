@@ -243,7 +243,6 @@ class GatewayRuntime(ManagedProcessRuntime[ProcessStartOptions]):
             with self._lifecycle_lock():
                 if result.ok or result.message in {
                     "gateway_not_running",
-                    "gateway_state_stale",
                 }:
                     GatewayClientLease(self, kind="gateway-stop")._clear_locked()
             return self._result(result)
@@ -270,6 +269,49 @@ class GatewayRuntime(ManagedProcessRuntime[ProcessStartOptions]):
             lifetime="on_demand" if lease.auto_stop else "explicit",
             clients=lease.clients,
         )
+
+    def recover_process(
+        self,
+        options: GatewayStartOptions,
+        *,
+        pid: int,
+        launch_mode: GatewayLaunchMode = "unknown",
+        auto_stop: bool = False,
+    ) -> RuntimeResult:
+        """Recreate state for a live gateway whose state file was lost.
+
+        The health endpoint is the only source allowed to provide ``pid`` to
+        this method.  We still verify that the process is alive and record its
+        current identity before adopting it, so a reused PID cannot be
+        mistaken for the gateway.
+        """
+        if pid <= 0 or not self.process_is_running(pid):
+            return RuntimeResult(False, "gateway_not_running", self.status())
+        with self._transition_lock(), self._lifecycle_lock():
+            current = self.status()
+            if current.running:
+                if current.pid == pid:
+                    return RuntimeResult(False, "gateway_already_running", current)
+                return RuntimeResult(False, "gateway_already_running", current)
+            identity = self.process_identity(pid)
+            if identity is None:
+                return RuntimeResult(False, "gateway_identity_unavailable", current)
+            state = {
+                "pid": pid,
+                "identity": identity,
+                "started_at": datetime.now(UTC).isoformat(),
+                "platform": self.platform_name,
+                "port": options.port,
+                "workspace": options.workspace,
+                "config_path": options.config_path,
+                "command": self._build_child_command(options),
+                "log_path": str(self.paths.log_path),
+                "launch_mode": launch_mode,
+            }
+            self._write_state(state)
+            if auto_stop:
+                GatewayClientLease(self, kind="gateway-recovery")._mark_ephemeral_locked()
+            return RuntimeResult(True, "gateway_recovered", self.status())
 
     @contextmanager
     def foreground_instance(self, options: ProcessStartOptions) -> Generator[None]:
@@ -473,7 +515,6 @@ class GatewayClientLease:
                 result = self.runtime._stop(timeout_s=timeout_s)
                 stopped = result.ok or result.message in {
                     "gateway_not_running",
-                    "gateway_state_stale",
                 }
                 with self.lifecycle_lock:
                     if stopped:

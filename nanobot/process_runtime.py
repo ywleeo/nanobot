@@ -171,7 +171,6 @@ class ManagedProcessRuntime(Generic[_StartOptionsT]):
                 status,
             )
         if identity_match == "mismatch":
-            self._clear_state()
             return ProcessResult(
                 False,
                 self._message("state_stale"),
@@ -194,7 +193,7 @@ class ManagedProcessRuntime(Generic[_StartOptionsT]):
         """Restart the managed process."""
         with self._lifecycle_lock():
             stop_result = self._stop(timeout_s=timeout_s)
-            recoverable = {self._message("not_running"), self._message("state_stale")}
+            recoverable = {self._message("not_running")}
             if not stop_result.ok and stop_result.message not in recoverable:
                 return stop_result
             return self._start_background(options)
@@ -214,13 +213,29 @@ class ManagedProcessRuntime(Generic[_StartOptionsT]):
         assert state is not None
 
         identity_match = self._process_identity_match(state, pid)
-        if not self._is_pid_running(pid) or identity_match == "mismatch":
+        if not self._is_pid_running(pid):
             self._clear_state()
             return ProcessStatus(
                 running=False,
                 pid=None,
                 state_path=self.paths.state_path,
                 log_path=self.paths.log_path,
+                reason=reason or "stale_state",
+            )
+
+        if identity_match == "mismatch":
+            # Keep the record while the PID is still alive.  Clearing it here
+            # makes a live process undiscoverable and can leave a gateway
+            # listening on its ports with no safe way to stop it.
+            command = state.get("command")
+            return ProcessStatus(
+                running=False,
+                pid=pid,
+                state_path=self.paths.state_path,
+                log_path=self.paths.log_path,
+                started_at=_as_str(state.get("started_at")),
+                port=_as_int(state.get("port")),
+                command=tuple(cast(list[str], command)) if isinstance(command, list) else (),
                 reason=reason or "stale_state",
             )
 

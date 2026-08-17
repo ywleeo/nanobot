@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 from nanobot import __version__
 from nanobot.cli.runtime_config import _model_display
 from nanobot.cli.webui_support import (
+    _gateway_health_info,
     _gateway_health_ready,
     _webui_browser_url,
     _webui_endpoint_reachable,
@@ -365,11 +366,8 @@ def _ensure_gateway(
     config_path: Path,
     workspace_override: str | None,
 ) -> _GatewayHandle:
-    from nanobot.gateway import (
-        GatewayClientLease,
-        GatewayInstance,
-        GatewayRuntime,
-    )
+    from nanobot.gateway import GatewayClientLease, GatewayInstance, GatewayRuntime
+    from nanobot.gateway.runtime import GatewayLaunchMode
 
     base_url = _webui_browser_url(config).split("/#/", 1)[0].rstrip("/")
     instance = GatewayInstance.resolve(
@@ -382,6 +380,27 @@ def _ensure_gateway(
     try:
         status = runtime.status()
         endpoint_reachable = _webui_endpoint_reachable(base_url)
+        health_info = (
+            _gateway_health_info(config.gateway.host, config.gateway.port)
+            if endpoint_reachable
+            else None
+        )
+        if (
+            not status.running
+            and health_info is not None
+            and health_info.get("service") == "nanobot-gateway"
+        ):
+            launch_mode = health_info.get("launch_mode")
+            if launch_mode not in {"foreground", "background", "unknown"}:
+                launch_mode = "unknown"
+            recovered = runtime.recover_process(
+                instance.start_options(port=config.gateway.port),
+                pid=int(health_info["pid"]),
+                launch_mode=cast(GatewayLaunchMode, launch_mode),
+                auto_stop=bool(health_info.get("auto_stop")),
+            )
+            if recovered.ok or recovered.status.running:
+                status = recovered.status
         if status.running:
             if status.port not in {None, config.gateway.port}:
                 raise TuiUnavailableError(
@@ -392,8 +411,8 @@ def _ensure_gateway(
                 return _GatewayHandle(base_url=base_url, lease=lease)
         elif endpoint_reachable:
             raise TuiUnavailableError(
-                "the configured gateway port belongs to a different nanobot instance; "
-                "stop that instance or use `nanobot agent --classic`"
+                "the configured gateway port is occupied, but its health identity "
+                "cannot be verified; stop that process or use `nanobot agent --classic`"
             )
 
         result = lease.ensure_on_demand_gateway(

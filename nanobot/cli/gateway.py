@@ -6,7 +6,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 from loguru import logger
@@ -19,7 +19,9 @@ from nanobot.gateway import (
     GatewayRuntime,
     GatewayStartOptions,
     GatewayStatus,
+    RuntimeResult,
 )
+from nanobot.gateway.runtime import GatewayLaunchMode
 from nanobot.gateway.service import (
     GatewayServiceInstaller,
     GatewayServiceOptions,
@@ -119,6 +121,45 @@ def create_gateway_app(
             port=port if port is not None else cfg.gateway.port,
             verbose=verbose,
         )
+
+    def reconcile_runtime_state(
+        runtime: Any,
+        *,
+        workspace: str | None,
+        config: str | None,
+        port: int | None = None,
+    ) -> GatewayStatus:
+        """Recover a live gateway when its small state file was lost."""
+        status = runtime.status()
+        recover = cast(Callable[..., RuntimeResult] | None, getattr(runtime, "recover_process", None))
+        if status.running or not callable(recover):
+            return status
+        try:
+            cfg = load_runtime_config(config, workspace)
+            from nanobot.cli.webui_support import _gateway_health_info
+
+            health = _gateway_health_info(cfg.gateway.host, port or cfg.gateway.port)
+            if health is None or health.get("service") != "nanobot-gateway":
+                return status
+            options = start_options(
+                port=port,
+                verbose=False,
+                workspace=workspace,
+                config=config,
+                loaded_config=cfg,
+            )
+            launch_mode = health.get("launch_mode")
+            if launch_mode not in {"foreground", "background", "unknown"}:
+                launch_mode = "unknown"
+            recovered = recover(
+                options,
+                pid=int(health["pid"]),
+                launch_mode=cast(GatewayLaunchMode, launch_mode),
+                auto_stop=bool(health.get("auto_stop")),
+            )
+        except (OSError, RuntimeError, ValueError, typer.Exit):
+            return status
+        return recovered.status if recovered.ok or recovered.status.running else status
 
     def print_status(status: GatewayStatus) -> None:
         console.print(f"Running: {'yes' if status.running else 'no'}")
@@ -260,7 +301,14 @@ def create_gateway_app(
         config: str | None = typer.Option(None, "--config", "-c", help="Path to config file"),
     ) -> None:
         """Show the background gateway status."""
-        print_status(runtime_for_instance(workspace=workspace, config=config).status())
+        runtime = runtime_for_instance(workspace=workspace, config=config)
+        print_status(
+            reconcile_runtime_state(
+                runtime,
+                workspace=workspace,
+                config=config,
+            )
+        )
 
     @gateway_app.command("logs")
     def gateway_logs(  # pyright: ignore[reportUnusedFunction]
@@ -288,6 +336,7 @@ def create_gateway_app(
     ) -> None:
         """Stop the background gateway."""
         runtime = runtime_for_instance(workspace=workspace, config=config)
+        reconcile_runtime_state(runtime, workspace=workspace, config=config)
         result = runtime.stop(timeout_s=timeout)
         if result.ok:
             console.print("[green]Gateway stopped.[/green]")
@@ -312,6 +361,12 @@ def create_gateway_app(
         if prepare_webui_bundle is not None:
             prepare_webui_bundle(cfg, interactive_build_mode())
         runtime = runtime_for_instance(workspace=workspace, config=config)
+        reconcile_runtime_state(
+            runtime,
+            workspace=workspace,
+            config=config,
+            port=port,
+        )
         result = runtime.restart(
             start_options(
                 port=port,

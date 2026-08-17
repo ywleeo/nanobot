@@ -4,7 +4,7 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 from pydantic import ValidationError
@@ -35,6 +35,7 @@ __all__ = [
     "_confirm_webui_action",
     "_ensure_local_webui_channel",
     "_gateway_health_bind_note",
+    "_gateway_health_info",
     "_gateway_health_ready",
     "_gateway_health_url",
     "_gateway_instance_command",
@@ -351,6 +352,16 @@ def _tcp_endpoint_reachable(host: str, port: int, *, timeout_s: float = 0.25) ->
 
 def _gateway_health_ready(host: str, port: int, *, timeout_s: float = 0.4) -> bool:
     """Return whether the nanobot gateway health endpoint responds OK."""
+    return _gateway_health_info(host, port, timeout_s=timeout_s) is not None
+
+
+def _gateway_health_info(
+    host: str,
+    port: int,
+    *,
+    timeout_s: float = 0.4,
+) -> dict[str, Any] | None:
+    """Read the local gateway identity used to recover a lost state file."""
     import json
     import urllib.error
     import urllib.request
@@ -362,16 +373,31 @@ def _gateway_health_ready(host: str, port: int, *, timeout_s: float = 0.4) -> bo
             timeout=timeout_s,
         ) as response:
             if response.status != 200:
-                return False
+                return None
             body = response.read(1024)
     except (OSError, urllib.error.URLError, TimeoutError, ValueError):
-        return False
+        return None
 
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    return payload.get("status") == "ok"
+        return None
+    if not isinstance(payload, dict):
+        return None
+    # Older gateways only returned {"status": "ok"}. Keep that response
+    # attachable, but callers must require the identity fields before adoption.
+    payload = cast(dict[str, Any], payload)
+    if payload.get("status") != "ok":
+        return None
+    if payload.get("service") == "nanobot-gateway":
+        pid = payload.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            return None
+        launch_mode = payload.get("launch_mode")
+        if launch_mode not in {"foreground", "background", "unknown"}:
+            payload["launch_mode"] = "unknown"
+        payload["auto_stop"] = bool(payload.get("auto_stop"))
+    return payload
 
 
 def _webui_endpoint_reachable(url: str, *, timeout_s: float = 0.25) -> bool:

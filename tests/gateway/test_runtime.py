@@ -257,6 +257,31 @@ def test_explicit_foreground_gateway_clears_stale_auto_stop_state(tmp_path, monk
     assert not lease.state_path.exists()
 
 
+def test_recover_process_rebuilds_lost_gateway_state(tmp_path, monkeypatch):
+    runtime = GatewayRuntime(paths=_paths(tmp_path), platform_name="Darwin")
+    monkeypatch.setattr(runtime, "process_is_running", lambda pid: pid == 54321)
+    monkeypatch.setattr(runtime, "_is_pid_running", lambda pid: pid == 54321)
+    monkeypatch.setattr(runtime, "process_identity", lambda pid: f"identity:{pid}")
+
+    result = runtime.recover_process(
+        GatewayStartOptions(port=18790, workspace="/tmp/workspace"),
+        pid=54321,
+        launch_mode="background",
+        auto_stop=True,
+    )
+
+    assert result.ok is True
+    assert result.message == "gateway_recovered"
+    assert result.status.running is True
+    assert result.status.pid == 54321
+    assert result.status.launch_mode == "background"
+    assert result.status.lifetime == "on_demand"
+    state = json.loads(runtime.paths.state_path.read_text(encoding="utf-8"))
+    assert state["identity"] == "identity:54321"
+    clients_state = runtime.paths.state_path.with_name("gateway.clients.json")
+    assert json.loads(clients_state.read_text(encoding="utf-8"))["auto_stop"] is True
+
+
 def test_foreground_gateway_release_preserves_a_replacement_state(tmp_path, monkeypatch):
     runtime = GatewayRuntime(paths=_paths(tmp_path), platform_name="Darwin")
     monkeypatch.setattr(runtime, "_process_identity", lambda pid: pid)
@@ -804,7 +829,7 @@ def test_status_clears_stale_state(tmp_path, monkeypatch):
     assert not runtime.paths.state_path.exists()
 
 
-def test_status_clears_state_when_pid_identity_changes(tmp_path, monkeypatch):
+def test_status_preserves_live_state_when_pid_identity_changes(tmp_path, monkeypatch):
     runtime = GatewayRuntime(paths=_paths(tmp_path), platform_name="Linux")
     runtime.paths.run_dir.mkdir(parents=True)
     runtime.paths.state_path.write_text('{"pid": 12345, "identity": 111}', encoding="utf-8")
@@ -814,8 +839,29 @@ def test_status_clears_state_when_pid_identity_changes(tmp_path, monkeypatch):
     status = runtime.status()
 
     assert status.running is False
+    assert status.pid == 12345
     assert status.reason == "stale_state"
-    assert not runtime.paths.state_path.exists()
+    assert runtime.paths.state_path.exists()
+
+
+def test_stop_preserves_live_state_when_pid_identity_changes(tmp_path, monkeypatch):
+    runtime = GatewayRuntime(paths=_paths(tmp_path), platform_name="Linux")
+    runtime.paths.run_dir.mkdir(parents=True)
+    runtime.paths.state_path.write_text('{"pid": 12345, "identity": 111}', encoding="utf-8")
+    monkeypatch.setattr(runtime, "_is_pid_running", lambda _pid: True)
+    monkeypatch.setattr(runtime, "_process_identity", lambda _pid: 222)
+    monkeypatch.setattr(
+        runtime,
+        "_terminate",
+        lambda *_args, **_kwargs: pytest.fail("a mismatched PID must not be signalled"),
+    )
+
+    result = runtime.stop()
+
+    assert result.ok is False
+    assert result.message == "gateway_state_stale"
+    assert result.status.pid == 12345
+    assert runtime.paths.state_path.exists()
 
 
 def test_status_keeps_live_state_when_identity_probe_is_temporarily_unavailable(

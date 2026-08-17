@@ -1,6 +1,7 @@
 """Foreground gateway runtime and lifecycle helpers."""
 
 import asyncio
+import os
 import signal
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from contextlib import suppress
@@ -749,7 +750,20 @@ def _run_gateway(
                         method, path = parts[0], parts[1]
 
                     if method == "GET" and path == "/health":
-                        body = _json.dumps({"status": "ok"})
+                        lease_snapshot = GatewayClientLease(
+                            gateway_runtime,
+                            kind="gateway-health",
+                        ).snapshot()
+                        current = gateway_runtime.status()
+                        body = _json.dumps(
+                            {
+                                "status": "ok",
+                                "service": "nanobot-gateway",
+                                "pid": os.getpid(),
+                                "launch_mode": current.launch_mode,
+                                "auto_stop": lease_snapshot.auto_stop,
+                            }
+                        )
                         status = "200 OK"
                         content_type = "application/json"
                     else:

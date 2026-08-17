@@ -1,6 +1,8 @@
 """WebUI CLI command."""
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 import typer
 from pydantic import ValidationError
@@ -18,6 +20,7 @@ from nanobot.cli.webui_support import (
     _confirm_webui_action,
     _ensure_local_webui_channel,
     _gateway_health_bind_note,
+    _gateway_health_info,
     _gateway_health_ready,
     _gateway_health_url,
     _gateway_instance_command,
@@ -103,7 +106,9 @@ def webui(
         GatewayClientLease,
         GatewayInstance,
         GatewayRuntime,
+        RuntimeResult,
     )
+    from nanobot.gateway.runtime import GatewayLaunchMode
 
     cli_terminal._ensure_interactive_tty_mode()
     config_path = _resolve_webui_config_path(config)
@@ -268,6 +273,26 @@ def webui(
 
     gateway_ready = _gateway_health_ready(runtime_config.gateway.host, effective_gateway_port)
     webui_ready = _webui_endpoint_reachable(webui_url)
+    recover = cast(Callable[..., RuntimeResult] | None, getattr(runtime, "recover_process", None))
+    if gateway_ready and callable(recover) and not runtime.status().running:
+        health_info = _gateway_health_info(
+            runtime_config.gateway.host,
+            effective_gateway_port,
+        )
+        if health_info is not None and health_info.get("service") == "nanobot-gateway":
+            launch_mode = health_info.get("launch_mode")
+            if launch_mode not in {"foreground", "background", "unknown"}:
+                launch_mode = "unknown"
+            recovered = recover(
+                start_options,
+                pid=int(health_info["pid"]),
+                launch_mode=cast(GatewayLaunchMode, launch_mode),
+                auto_stop=bool(health_info.get("auto_stop")),
+            )
+            if recovered.ok or recovered.status.running:
+                console.print(
+                    "[yellow]Recovered the gateway lifecycle state from its health endpoint.[/yellow]"
+                )
     if gateway_ready and webui_ready:
         lease = GatewayClientLease(runtime, kind="webui")
         lease.acquire()
