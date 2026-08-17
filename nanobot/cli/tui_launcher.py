@@ -409,6 +409,11 @@ def _ensure_gateway(
                 )
             if endpoint_reachable:
                 return _GatewayHandle(base_url=base_url, lease=lease)
+        elif endpoint_reachable and health_info is not None:
+            # Gateways from before the health identity response only expose
+            # {"status": "ok"}. They are still the live local gateway; do not
+            # report a false negative or try to start a second process.
+            return _GatewayHandle(base_url=base_url, lease=lease)
         elif endpoint_reachable:
             raise TuiUnavailableError(
                 "the configured gateway port is occupied, but its health identity "

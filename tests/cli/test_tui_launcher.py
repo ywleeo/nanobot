@@ -559,6 +559,7 @@ def test_gateway_reuse_requires_the_matching_managed_instance(
 
     monkeypatch.setattr("nanobot.gateway.GatewayRuntime", FakeRuntime)
     monkeypatch.setattr("nanobot.cli.tui_launcher._webui_endpoint_reachable", lambda _url: True)
+    monkeypatch.setattr("nanobot.cli.tui_launcher._gateway_health_info", lambda *_a, **_kw: None)
 
     with pytest.raises(TuiUnavailableError, match="health identity cannot be verified"):
         _ensure_gateway(

@@ -139,8 +139,23 @@ def create_gateway_app(
             from nanobot.cli.webui_support import _gateway_health_info
 
             health = _gateway_health_info(cfg.gateway.host, port or cfg.gateway.port)
-            if health is None or health.get("service") != "nanobot-gateway":
+            if health is None:
                 return status
+            if health.get("service") != "nanobot-gateway":
+                # Pre-identity gateways only returned {"status": "ok"}. The
+                # health endpoint is still authoritative for liveness, but
+                # there is no safe PID to manage until the next restart.
+                return GatewayStatus(
+                    running=True,
+                    pid=None,
+                    state_path=status.state_path,
+                    log_path=status.log_path,
+                    port=port or cfg.gateway.port,
+                    reason="health_endpoint_only",
+                    launch_mode="unknown",
+                    lifetime="explicit",
+                    clients=status.clients,
+                )
             options = start_options(
                 port=port,
                 verbose=False,
@@ -336,7 +351,15 @@ def create_gateway_app(
     ) -> None:
         """Stop the background gateway."""
         runtime = runtime_for_instance(workspace=workspace, config=config)
-        reconcile_runtime_state(runtime, workspace=workspace, config=config)
+        reconciled = reconcile_runtime_state(runtime, workspace=workspace, config=config)
+        if reconciled.reason == "health_endpoint_only":
+            console.print(
+                "[yellow]Gateway is alive, but this older instance has no managed PID. "
+                "Stop it from its owning terminal, then rerun `nanobot gateway`."
+                "[/yellow]"
+            )
+            print_status(reconciled)
+            raise typer.Exit(1)
         result = runtime.stop(timeout_s=timeout)
         if result.ok:
             console.print("[green]Gateway stopped.[/green]")
@@ -361,12 +384,19 @@ def create_gateway_app(
         if prepare_webui_bundle is not None:
             prepare_webui_bundle(cfg, interactive_build_mode())
         runtime = runtime_for_instance(workspace=workspace, config=config)
-        reconcile_runtime_state(
+        reconciled = reconcile_runtime_state(
             runtime,
             workspace=workspace,
             config=config,
             port=port,
         )
+        if reconciled.reason == "health_endpoint_only":
+            console.print(
+                "[yellow]Gateway is alive, but this older instance has no managed PID. "
+                "Stop it from its owning terminal before restarting.[/yellow]"
+            )
+            print_status(reconciled)
+            raise typer.Exit(1)
         result = runtime.restart(
             start_options(
                 port=port,

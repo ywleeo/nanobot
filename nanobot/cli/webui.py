@@ -272,13 +272,14 @@ def webui(
         )
 
     gateway_ready = _gateway_health_ready(runtime_config.gateway.host, effective_gateway_port)
+    health_info = (
+        _gateway_health_info(runtime_config.gateway.host, effective_gateway_port)
+        if gateway_ready
+        else None
+    )
     webui_ready = _webui_endpoint_reachable(webui_url)
     recover = cast(Callable[..., RuntimeResult] | None, getattr(runtime, "recover_process", None))
     if gateway_ready and callable(recover) and not runtime.status().running:
-        health_info = _gateway_health_info(
-            runtime_config.gateway.host,
-            effective_gateway_port,
-        )
         if health_info is not None and health_info.get("service") == "nanobot-gateway":
             launch_mode = health_info.get("launch_mode")
             if launch_mode not in {"foreground", "background", "unknown"}:
@@ -321,8 +322,8 @@ def webui(
                     _attach_to_background_gateway(runtime)
                 else:
                     console.print(
-                        "[yellow]This gateway is controlled by another foreground command. "
-                        "Stop it from that terminal.[/yellow]"
+                        "[yellow]This gateway is live, but its lifecycle state is unavailable. "
+                        "It will be adopted automatically after its next restart.[/yellow]"
                     )
                 return
 

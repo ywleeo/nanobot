@@ -2640,7 +2640,7 @@ def test_webui_foreground_does_not_claim_unmanaged_gateway(monkeypatch, tmp_path
     result = runner.invoke(app, ["webui", "--config", str(config_file), "--yes"])
 
     assert result.exit_code == 0
-    assert "controlled by another foreground command" in result.stdout
+    assert "lifecycle state is unavailable" in result.stdout
 
 
 def test_webui_foreground_refuses_occupied_webui_port(monkeypatch, tmp_path: Path) -> None:
