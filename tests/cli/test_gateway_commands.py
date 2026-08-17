@@ -353,6 +353,34 @@ def test_gateway_status_uses_runtime(tmp_path):
     assert "Clients: 0" in result.stdout
 
 
+def test_gateway_status_does_not_hide_legacy_live_gateway(tmp_path, monkeypatch):
+    app, fake_runtime, _service, _calls, _prepare_calls = _test_app(tmp_path)
+    fake_runtime.status_value = GatewayStatus(
+        running=False,
+        pid=None,
+        state_path=fake_runtime.paths.state_path,
+        log_path=fake_runtime.paths.log_path,
+        port=None,
+        reason="not_started",
+    )
+    fake_runtime.recover_process = lambda *_args, **_kwargs: RuntimeResult(
+        False,
+        "gateway_not_running",
+        fake_runtime.status_value,
+    )  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "nanobot.cli.webui_support._gateway_health_info",
+        lambda *_args, **_kwargs: {"status": "ok"},
+    )
+
+    result = runner.invoke(app, ["gateway", "status"])
+
+    assert result.exit_code == 0
+    assert "Running: yes" in result.stdout
+    assert "Reason: health_endpoint_only" in result.stdout
+    assert "PID:" not in result.stdout
+
+
 def test_gateway_logs_can_read_without_following(tmp_path):
     app, _runtime, _service, _calls, _prepare_calls = _test_app(tmp_path)
 
