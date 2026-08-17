@@ -445,9 +445,11 @@ export class NanobotTui {
     this.activeThemeMode = this.resolveThemeMode(renderer.themeMode)
     this.palette = this.activeThemeMode === "light" ? LIGHT : DARK
     this.host = host
-    this.localCommands = host.hosted
-      ? LOCAL_COMMANDS.filter(({ command }) => command === "/context" || command === "/diff")
-      : LOCAL_COMMANDS
+    // Herdr owns pane/workspace navigation, not nanobot's gateway sessions.
+    // Keep the compact session picker and runtime controls available in a
+    // hosted pane; the quiet-host contract is about avoiding a duplicate
+    // sidebar/dashboard, not hiding useful session-scoped controls.
+    this.localCommands = LOCAL_COMMANDS
     this.transcript = new Transcript(
       renderer,
       transcriptTheme(this.palette, this.backgroundKnown),
@@ -524,21 +526,19 @@ export class NanobotTui {
       truncate: true,
       fg: this.palette.muted,
       selectable: false,
-      ...(host.hosted ? {} : {
-        onMouseOver: () => { this.titleText.fg = this.palette.accent },
-        onMouseOut: () => this.renderTitleColor(),
-        onMouseDown: (event) => {
-          if (event.button !== 0) return
-          event.preventDefault()
-          event.stopPropagation()
-          this.renderer.clearSelection()
-          if (this.sessionLoading || this.sessionMenu.visible) {
-            this.closeSessions()
-            return
-          }
-          void this.openSessions()
-        },
-      }),
+      onMouseOver: () => { this.titleText.fg = this.palette.accent },
+      onMouseOut: () => this.renderTitleColor(),
+      onMouseDown: (event) => {
+        if (event.button !== 0) return
+        event.preventDefault()
+        event.stopPropagation()
+        this.renderer.clearSelection()
+        if (this.sessionLoading || this.sessionMenu.visible) {
+          this.closeSessions()
+          return
+        }
+        void this.openSessions()
+      },
     })
     this.runtimeControls = new RuntimeControls(
       renderer,
@@ -572,11 +572,9 @@ export class NanobotTui {
       },
     )
     this.title.add(this.titleText)
-    if (!host.hosted) {
-      this.title.add(this.runtimeControls.modelText)
-      this.title.add(this.runtimeControls.accessText)
-      this.title.add(this.runtimeControls.contextText)
-    }
+    this.title.add(this.runtimeControls.modelText)
+    this.title.add(this.runtimeControls.accessText)
+    this.title.add(this.runtimeControls.contextText)
     const composerSurface = this.composerSurface()
     this.composerFrame = new BoxRenderable(renderer, {
       id: "nanobot-tui-composer-frame",
@@ -1562,17 +1560,14 @@ export class NanobotTui {
   }
 
   private updateTitle(): void {
-    if (this.host.hosted) {
-      this.titleText.maxWidth = Math.max(8, this.renderer.width - 4)
-      this.titleText.content = this.currentTask ? `› ${this.currentTask}` : ""
-      // In a hosted pane this is the resume anchor, not decorative chrome.
-      // Keep it visible even when Herdr temporarily makes the pane very short.
-      this.title.visible = Boolean(this.currentTask)
-      this.syncHostMetadata()
-      return
-    }
-    const identity = this.sessionTitle.trim() || "nanobot"
-    this.titleText.maxWidth = Math.max(8, Math.floor(this.renderer.width * 0.38))
+    // The title is both the current-task resume anchor and the session
+    // selector. Herdr panes keep that same compact affordance instead of
+    // growing a second sidebar; the gateway remains the source of truth for
+    // discovering existing sessions.
+    const identity = this.host.hosted && this.currentTask
+      ? `› ${this.currentTask}`
+      : this.sessionTitle.trim() || "nanobot"
+    this.titleText.maxWidth = Math.max(8, Math.floor(this.renderer.width * 0.42))
     this.titleText.content = identity
     const context = this.contextTokens === null
       ? ""
@@ -1581,11 +1576,16 @@ export class NanobotTui {
         : ""} ctx`
     this.runtimeControls.updateModel(this.modelName, this.modelPreset)
     this.runtimeControls.updateContext(context)
+    if (this.host.hosted) {
+      // Hosted TUI uses the main screen, so its compact header must remain
+      // present even before the first task arrives or in an idle session.
+      this.title.visible = true
+    }
     this.syncHostMetadata()
   }
 
   private renderTitleColor(): void {
-    this.titleText.fg = !this.host.hosted && (this.sessionLoading || this.sessionMenu.visible)
+    this.titleText.fg = (this.sessionLoading || this.sessionMenu.visible)
       ? this.palette.accent
       : this.palette.muted
   }

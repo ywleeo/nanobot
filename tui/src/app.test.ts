@@ -2049,7 +2049,10 @@ describe("NanobotTui in a Herdr pane", () => {
     expect(sessions).toEqual(["chat"])
     expect(frame).toContain("› Ship the Herdr integration")
     expect(frame).not.toContain(">_  nanobot")
-    expect(frame).not.toContain("test/model")
+    // Herdr keeps the pane quiet (no duplicate sidebar/dashboard), while
+    // the compact session-scoped controls remain usable in the header.
+    expect(frame).toContain("test/model")
+    expect(frame).toContain("workspace access")
     expect(states.some(({ state }) => state === "working")).toBe(true)
     expect(states.at(-1)).toEqual({ state: "blocked", message: "Approval required" })
     expect(metadata.at(-1)).toMatchObject({
@@ -2081,6 +2084,87 @@ describe("NanobotTui in a Herdr pane", () => {
 
     app.stop()
     expect(released).toBe(true)
+  })
+
+  test("keeps gateway session and runtime controls available in a Herdr pane", async () => {
+    const setup = await createTestRenderer({ width: 96, height: 24, screenMode: "main-screen" })
+    const original = globalThis.fetch
+    globalThis.fetch = ((input: string | URL | Request) => {
+      const url = String(input)
+      if (url.endsWith("/api/sessions")) {
+        return Promise.resolve(new Response(JSON.stringify({
+          sessions: [
+            { key: "websocket:chat", title: "Current chat", preview: "Current work" },
+            { key: "websocket:other", title: "Release checklist", preview: "Ship it" },
+          ],
+        })))
+      }
+      if (url.endsWith("/api/webui/sidebar-state")) {
+        return Promise.resolve(new Response(JSON.stringify({})))
+      }
+      if (url.endsWith("/api/settings")) {
+        return Promise.resolve(new Response(JSON.stringify({
+          model_presets: [{ name: "default", model: "test/model" }],
+        })))
+      }
+      if (url.endsWith("/api/workspaces")) {
+        return Promise.resolve(new Response(JSON.stringify({ controls: { can_use_full_access: true } })))
+      }
+      return Promise.resolve(new Response("{}"))
+    }) as typeof fetch
+    const attached: string[] = []
+    const host: TuiHost = {
+      hosted: true,
+      reportState() {},
+      reportSession() {},
+      reportMetadata() {},
+      release() {},
+    }
+    const app = NanobotTui.mount(
+      setup.renderer,
+      { ...options, apiUrl: "http://nanobot.test", apiToken: "secret" },
+      client([], attached),
+      new MockTreeSitterClient({ autoResolveTimeout: 0 }),
+      host,
+    )
+    app.accept({ event: "attached", chat_id: "chat" })
+    const ui = app as unknown as {
+      composer: TextareaRenderable
+      titleText: TextRenderable
+      sessionMenu: { visible: boolean }
+      runtimeControls: {
+        modelText: TextRenderable
+        accessText: TextRenderable
+        visible: boolean
+      }
+    }
+
+    try {
+      await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+      await setup.renderOnce()
+      expect(setup.captureCharFrame()).toContain("test/model")
+      expect(setup.captureCharFrame()).toContain("workspace access")
+
+      await setup.mockMouse.click(ui.titleText.x + 1, ui.titleText.y)
+      await waitUntil(() => ui.sessionMenu.visible)
+      expect(ui.composer.placeholder).toBe("Search sessions")
+      ui.composer.setText("release")
+      ui.composer.submit()
+      await waitUntil(() => attached.length === 1)
+      expect(attached).toEqual(["other"])
+
+      app.accept({ event: "attached", chat_id: "other" })
+      await waitUntil(() => (app as unknown as { ready: boolean }).ready)
+      await setup.mockMouse.click(ui.runtimeControls.modelText.x + 1, ui.runtimeControls.modelText.y)
+      await waitUntil(() => ui.runtimeControls.visible)
+      expect(ui.runtimeControls.modelText.plainText).toContain("test/model")
+      await setup.mockMouse.click(ui.runtimeControls.accessText.x + 1, ui.runtimeControls.accessText.y)
+      await waitUntil(() => ui.runtimeControls.visible)
+    } finally {
+      globalThis.fetch = original
+      app.stop()
+      setup.renderer.destroy()
+    }
   })
 })
 
