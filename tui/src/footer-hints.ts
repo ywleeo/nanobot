@@ -56,8 +56,12 @@ export function footerTelemetry(
     const prompt = usage.prompt_tokens
     const completion = usage.completion_tokens
     if (typeof prompt === "number" || typeof completion === "number") {
-      parts.push(`${formatTelemetryTokens(prompt || 0)} in`)
-      parts.push(`${formatTelemetryTokens(completion || 0)} out`)
+      // Provider usage is authoritative when available.  The runner falls
+      // back to a tokenizer/heuristic estimate for providers that omit usage;
+      // keep that distinction visible for both directions, not just tok/s.
+      const estimated = (usage.estimated_tokens || 0) > 0 ? "~" : ""
+      parts.push(`${estimated}${formatTelemetryTokens(prompt || 0)} in`)
+      parts.push(`${estimated}${formatTelemetryTokens(completion || 0)} out`)
     }
   }
   if (

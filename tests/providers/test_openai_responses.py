@@ -666,6 +666,20 @@ class TestParseResponseOutput:
         assert result.usage["completion_tokens"] == 50
         assert result.usage["total_tokens"] == 150
 
+    def test_usage_maps_responses_cache_details(self):
+        resp = {
+            "output": [],
+            "status": "completed",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "total_tokens": 150,
+                "input_tokens_details": {"cached_tokens": 80},
+            },
+        }
+        result = parse_response_output(resp)
+        assert result.usage["cached_tokens"] == 80
+
     def test_preserves_every_output_item_as_opaque_state(self):
         input_items = [{"role": "user", "content": "inspect the repo"}]
         output = [
@@ -1761,6 +1775,23 @@ class TestConsumeSdkStream:
 
         _, _, _, usage, _ = await consume_sdk_stream(stream())
         assert usage == {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+
+    @pytest.mark.asyncio
+    async def test_stream_usage_maps_responses_cache_details(self):
+        usage_obj = MagicMock(
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
+            input_tokens_details=MagicMock(cached_tokens=80),
+        )
+        resp_obj = MagicMock(status="completed", usage=usage_obj, output=[])
+        ev = MagicMock(type="response.completed", response=resp_obj)
+
+        async def stream():
+            yield ev
+
+        _, _, _, usage, _ = await consume_sdk_stream(stream())
+        assert usage["cached_tokens"] == 80
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

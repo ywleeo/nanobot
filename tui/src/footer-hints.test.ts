@@ -58,6 +58,18 @@ describe("footerHints", () => {
       .toBe("140 tok/s · 4.5M in · 19K out · 80% cached")
   })
 
+  test("marks aggregate provider-missing usage as estimated", () => {
+    const result = footerTelemetry({
+      prompt_tokens: 32_000,
+      completion_tokens: 9_000,
+      total_tokens: 41_000,
+      estimated_tokens: 41_000,
+    }, 120, theme)
+
+    expect(result.chunks.map(({ text }) => text).join(""))
+      .toBe("~32K in · ~9K out")
+  })
+
   test("degrades telemetry instead of guessing missing provider metrics", () => {
     const compact = footerTelemetry({
       prompt_tokens: 1000,
