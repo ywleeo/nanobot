@@ -27,6 +27,25 @@ describe("TUI host integration", () => {
     expect(commands).toEqual([])
   })
 
+  test("recognizes Herdr's documented caller context without the legacy marker", async () => {
+    const commands: string[][] = []
+    const host = createTuiHost(
+      {
+        HERDR_WORKSPACE_ID: "w1",
+        HERDR_TAB_ID: "w1:t1",
+        HERDR_PANE_ID: "w1:p2",
+      },
+      async (command) => { commands.push([...command]) },
+    )
+
+    host.reportState("working", "task")
+    await settle()
+
+    expect(host.hosted).toBe(true)
+    expect(commands[0]).toContain("report-agent")
+    expect(commands[0]).toContain("w1:p2")
+  })
+
   test("reports semantic lifecycle, session identity, metadata, and release", async () => {
     const commands: string[][] = []
     const host = createTuiHost(

@@ -187,6 +187,16 @@ export function createTuiHost(
   run: CommandRunner = runCommand,
 ): TuiHost {
   const paneId = environment.HERDR_PANE_ID?.trim() || ""
-  if (environment.HERDR_ENV !== "1" || !paneId) return new StandaloneHost()
+  const hasHerdrCallerContext = Boolean(
+    environment.HERDR_WORKSPACE_ID?.trim()
+    && environment.HERDR_TAB_ID?.trim()
+    && paneId,
+  )
+  // Herdr's public contract injects the caller IDs. HERDR_ENV is retained as
+  // a compatibility hint, but it is not required: older/newer Herdr clients
+  // may omit that extra marker while still providing an unambiguous pane.
+  if (!paneId || (environment.HERDR_ENV !== "1" && !hasHerdrCallerContext)) {
+    return new StandaloneHost()
+  }
   return new HerdrHost(paneId, environment.HERDR_BIN_PATH?.trim() || "herdr", run)
 }
